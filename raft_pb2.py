@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"\x08\n\x06NoArgs\")\n\x08NodeArgs\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0f\n\x07node_id\x18\x02 \x01(\x05\".\n\x0eResultWithTerm\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0e\n\x06result\x18\x02 \x01(\x08\" \n\x0c\x44urationArgs\x12\x10\n\x08\x64uration\x18\x01 \x01(\x05\"4\n\nLeaderResp\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x13\n\x0bleader_addr\x18\x02 \x01(\t2\xa8\x01\n\x08RaftNode\x12)\n\x0bRequestVote\x12\t.NodeArgs\x1a\x0f.ResultWithTerm\x12+\n\rAppendEntries\x12\t.NodeArgs\x1a\x0f.ResultWithTerm\x12!\n\tGetLeader\x12\x07.NoArgs\x1a\x0b.LeaderResp\x12!\n\x07Suspend\x12\r.DurationArgs\x1a\x07.NoArgsb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"\x08\n\x06NoArgs\")\n\x08NodeArgs\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0f\n\x07node_id\x18\x02 \x01(\x05\"J\n\x08VoteArgs\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0f\n\x07node_id\x18\x02 \x01(\x05\x12\x0f\n\x07llIndex\x18\x03 \x01(\x05\x12\x0e\n\x06llTerm\x18\x04 \x01(\x05\".\n\x0eResultWithTerm\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0e\n\x06result\x18\x02 \x01(\x08\" \n\x0c\x44urationArgs\x12\x10\n\x08\x64uration\x18\x01 \x01(\x05\"4\n\nLeaderResp\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x13\n\x0bleader_addr\x18\x02 \x01(\t2\xa8\x01\n\x08RaftNode\x12)\n\x0bRequestVote\x12\t.VoteArgs\x1a\x0f.ResultWithTerm\x12+\n\rAppendEntries\x12\t.NodeArgs\x1a\x0f.ResultWithTerm\x12!\n\tGetLeader\x12\x07.NoArgs\x1a\x0b.LeaderResp\x12!\n\x07Suspend\x12\r.DurationArgs\x1a\x07.NoArgsb\x06proto3')
 
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, globals())
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'raft_pb2', globals())
@@ -24,12 +24,14 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   _NOARGS._serialized_end=22
   _NODEARGS._serialized_start=24
   _NODEARGS._serialized_end=65
-  _RESULTWITHTERM._serialized_start=67
-  _RESULTWITHTERM._serialized_end=113
-  _DURATIONARGS._serialized_start=115
-  _DURATIONARGS._serialized_end=147
-  _LEADERRESP._serialized_start=149
-  _LEADERRESP._serialized_end=201
-  _RAFTNODE._serialized_start=204
-  _RAFTNODE._serialized_end=372
+  _VOTEARGS._serialized_start=67
+  _VOTEARGS._serialized_end=141
+  _RESULTWITHTERM._serialized_start=143
+  _RESULTWITHTERM._serialized_end=189
+  _DURATIONARGS._serialized_start=191
+  _DURATIONARGS._serialized_end=223
+  _LEADERRESP._serialized_start=225
+  _LEADERRESP._serialized_end=277
+  _RAFTNODE._serialized_start=280
+  _RAFTNODE._serialized_end=448
 # @@protoc_insertion_point(module_scope)

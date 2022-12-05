@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 service RaftNode {
-        rpc RequestVote(NodeArgs) returns (ResultWithTerm);
+        rpc RequestVote(VoteArgs) returns (ResultWithTerm);
         rpc AppendEntries(NodeArgs) returns (ResultWithTerm);
         rpc GetLeader(NoArgs) returns (LeaderResp);
         rpc Suspend(DurationArgs) returns (NoArgs);
@@ -12,6 +12,13 @@ message NoArgs {}
 message NodeArgs {
         int32 term = 1;
         int32 node_id = 2;
+}
+
+message VoteArgs {
+        int32 term = 1;
+        int32 node_id = 2;
+        int32 llIndex = 3;
+        int32 llTerm = 4;
 }
 
 message ResultWithTerm {

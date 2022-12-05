@@ -16,7 +16,7 @@ class RaftNodeStub(object):
         """
         self.RequestVote = channel.unary_unary(
                 '/RaftNode/RequestVote',
-                request_serializer=raft__pb2.NodeArgs.SerializeToString,
+                request_serializer=raft__pb2.VoteArgs.SerializeToString,
                 response_deserializer=raft__pb2.ResultWithTerm.FromString,
                 )
         self.AppendEntries = channel.unary_unary(
@@ -68,7 +68,7 @@ def add_RaftNodeServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'RequestVote': grpc.unary_unary_rpc_method_handler(
                     servicer.RequestVote,
-                    request_deserializer=raft__pb2.NodeArgs.FromString,
+                    request_deserializer=raft__pb2.VoteArgs.FromString,
                     response_serializer=raft__pb2.ResultWithTerm.SerializeToString,
             ),
             'AppendEntries': grpc.unary_unary_rpc_method_handler(
@@ -108,7 +108,7 @@ class RaftNode(object):
             timeout=None,
             metadata=None):
         return grpc.experimental.unary_unary(request, target, '/RaftNode/RequestVote',
-            raft__pb2.NodeArgs.SerializeToString,
+            raft__pb2.VoteArgs.SerializeToString,
             raft__pb2.ResultWithTerm.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

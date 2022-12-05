@@ -34,8 +34,11 @@ state = {
     'vote_count': 0,
     'voted_for_id': -1,
     'leader_id': -1,
+    'commitIndex':0,
+    'lastApplied':0
 }
-
+log = []
+storage = {}
 # for debugging
 START_TIME = time.time()
 def log_prefix():
@@ -135,9 +138,10 @@ def start_heartbeats():
         
 def request_vote_worker_thread(id_to_request):
     ensure_connected(id_to_request)
-    (_, _, stub) = state['nodes'][id_to_request]
+    (_, _, stub, _) = state['nodes'][id_to_request]
     try:
-        resp = stub.RequestVote(pb2.NodeArgs(term=state['term'], node_id=state['id']), timeout=0.1)
+        ind = len(log)-1
+        resp = stub.RequestVote(pb2.VoteArgs(term=state['term'], node_id=state['id'],llIndex=ind,llTerm=log[ind]['term']), timeout=0.1)
 
         with state_lock:
             # if requested node replied for too long,
@@ -189,7 +193,7 @@ def heartbeat_thread(id_to_request):
                     continue
 
                 ensure_connected(id_to_request)
-                (_, _, stub) = state['nodes'][id_to_request]
+                (_, _, stub, _) = state['nodes'][id_to_request]
                 resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id']), timeout=0.100)
 
                 if (state['type'] != 'leader') or is_suspended:
@@ -231,11 +235,12 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 state['term'] = request.term
                 become_a_follower()
             if state['term'] == request.term:
-                if state['voted_for_id'] == -1:
-                    become_a_follower()
-                    state['voted_for_id'] = request.node_id
-                    reply = {'result': True, 'term': state['term']}
-                    print(f"Voted for node {state['voted_for_id']}")
+                with len(log)-1 as ind:
+                    if state['voted_for_id'] == -1 and (request.llIndex > ind or not (request.llIndex == ind and log[ind]['term'] != request.llTerm)):
+                        become_a_follower()
+                        state['voted_for_id'] = request.node_id
+                        reply = {'result': True, 'term': state['term']}
+                        print(f"Voted for node {state['voted_for_id']}")
             return pb2.ResultWithTerm(**reply)
 
     def AppendEntries(self, request, context):
@@ -260,7 +265,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if is_suspended:
             return
 
-        (host, port, _) = state['nodes'][state['leader_id']]
+        (host, port, _, _) = state['nodes'][state['leader_id']]
         reply = {'leader_id': state['leader_id'], 'leader_addr': f"{host}:{[port]}"}
         return pb2.LeaderResp(**reply)
 
@@ -280,22 +285,22 @@ class Handler(pb2_grpc.RaftNodeServicer):
 def ensure_connected(id):
     if id == state['id']:
         raise "Shouldn't try to connect to itself"
-    (host, port, stub) = state['nodes'][id]
+    (host, port, stub, ind) = state['nodes'][id]
     if not stub:
         channel = grpc.insecure_channel(f"{host}:{port}")
         stub = pb2_grpc.RaftNodeStub(channel)
-        state['nodes'][id] = (host, port, stub)
+        state['nodes'][id] = (host, port, stub, ind)
 
 def reopen_connection(id):
     if id == state['id']:
         raise "Shouldn't try to connect to itself"
-    (host, port, stub) = state['nodes'][id]
+    (host, port, stub, ind) = state['nodes'][id]
     channel = grpc.insecure_channel(f"{host}:{port}")
     stub = pb2_grpc.RaftNodeStub(channel)
-    state['nodes'][id] = (host, port, stub)
+    state['nodes'][id] = (host, port, stub, ind)
 
 def start_server(state):
-    (ip, port, _stub) = state['nodes'][state['id']]
+    (ip, port, _, _) = state['nodes'][state['id']]
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
     pb2_grpc.add_RaftNodeServicer_to_server(Handler(), server)
     server.add_insecure_port(f"{ip}:{port}")
@@ -344,6 +349,6 @@ if __name__ == '__main__':
     nodes = None
     with open("config.conf", 'r') as f:
         line_parts = map(lambda line: line.split(),f.read().strip().split("\n"))
-        nodes = dict([(int(p[0]), (p[1], int(p[2]), None)) for p in line_parts])
+        nodes = dict([(int(p[0]), (p[1], int(p[2]), None, {'nextIndex':0,'matchIndex':0})) for p in line_parts])
         print(list(nodes))
     main(int(id), nodes)

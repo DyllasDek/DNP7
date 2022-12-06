@@ -5,6 +5,8 @@ service RaftNode {
         rpc AppendEntries(NodeArgs) returns (ResultWithTerm);
         rpc GetLeader(NoArgs) returns (LeaderResp);
         rpc Suspend(DurationArgs) returns (NoArgs);
+        rpc GetVal(GetMsg) returns (GetResp);
+        rpc SetVal(SetMsg) returns (SetResp);
 }
 
 message NoArgs {}
@@ -12,6 +14,10 @@ message NoArgs {}
 message NodeArgs {
         int32 term = 1;
         int32 node_id = 2;
+        int32 plIndex = 3;
+        int32 plTerm = 4;
+        repeated string entries = 5;
+        int32 leaderCommit = 6;
 }
 
 message VoteArgs {
@@ -28,6 +34,24 @@ message ResultWithTerm {
 
 message DurationArgs {
         int32 duration = 1;
+}
+
+message SetMsg {
+        string key = 1;
+        string val = 2;
+}
+
+message GetMsg {
+        string key = 1;
+}
+
+message SetResp{
+        bool success = 1;
+}
+
+message GetResp {
+        bool success = 1;
+        string value = 2;
 }
 
 message LeaderResp {

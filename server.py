@@ -37,8 +37,9 @@ state = {
     'commitIndex':0,
     'lastApplied':0
 }
-log = []
+log = [{'term':-1,'command':-1 }]
 storage = {}
+nextIndex = [], matchIndex = []
 # for debugging
 START_TIME = time.time()
 def log_prefix():
@@ -71,6 +72,8 @@ def stop_election_campaign_timer():
 #
 # elections
 #
+def split_func(str):
+    return str.split('=')
 
 def start_election():
     with state_lock:
@@ -138,7 +141,7 @@ def start_heartbeats():
         
 def request_vote_worker_thread(id_to_request):
     ensure_connected(id_to_request)
-    (_, _, stub, _) = state['nodes'][id_to_request]
+    (_, _, stub) = state['nodes'][id_to_request]
     try:
         ind = len(log)-1
         resp = stub.RequestVote(pb2.VoteArgs(term=state['term'], node_id=state['id'],llIndex=ind,llTerm=log[ind]['term']), timeout=0.1)
@@ -183,7 +186,19 @@ def election_timeout_thread():
             # if somehow we got here while being a leader,
             # then do nothing
 
+def update_index():
+    if state['type'] == 'leader':
+        with max(matchIndex) as MI:
+            if MI > state['commitIndex'] and matchIndex.count(MI) > (len(state['nodes'])//2) + 1 and log[MI]['term'] == state['term']:
+                state['commitIndex'] = MI
+
+    if state['commitIndex'] > state['lastApplied']:
+        state['lastApplied'] += 1
+        func = split_func(log[state['lastApplied']]['command'])
+        storage[func[0]] = func[1]
+
 def heartbeat_thread(id_to_request):
+    global matchIndex,nextIndex
     while not is_terminating:
         try:
             if heartbeat_events[id_to_request].wait(timeout=0.5):
@@ -191,19 +206,29 @@ def heartbeat_thread(id_to_request):
 
                 if (state['type'] != 'leader') or is_suspended:
                     continue
+                
+                update_index()
 
                 ensure_connected(id_to_request)
-                (_, _, stub, _) = state['nodes'][id_to_request]
-                resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id']), timeout=0.100)
+                (_, _, stub) = state['nodes'][id_to_request]
 
-                if (state['type'] != 'leader') or is_suspended:
-                    continue
+                with nextIndex[id_to_request]-1 as lInd, [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]-1:]] as entr:
+                    resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id'], plIndex=lInd, plTerm=log[lInd]['term'],entries=entr,leaderCommit=state['commitIndex']), timeout=0.100)
 
-                with state_lock:
-                    if state['term'] < resp.term:
-                        reset_election_campaign_timer()
-                        state['term'] = resp.term
-                        become_a_follower()
+                    if (state['type'] != 'leader') or is_suspended:
+                        continue
+
+                    with state_lock:
+                        if state['term'] < resp.term:
+                            reset_election_campaign_timer()
+                            state['term'] = resp.term
+                            become_a_follower()
+                        elif not resp.result:
+                            nextIndex[id_to_request] = 1 if nextIndex[id_to_request] == 2 else nextIndex[id_to_request] - 1
+                            matchIndex[id_to_request] = 0 if matchIndex[id_to_request] == 1 else matchIndex[id_to_request] - 1
+                        elif len(entr) > 0:
+                            nextIndex[id_to_request] += 1 + len(entr)
+                            matchIndex[id_to_request] += len(entr)
                 threading.Timer(HEARTBEAT_DURATION*0.001, heartbeat_events[id_to_request].set).start()
         except grpc.RpcError:
             reopen_connection(id_to_request)
@@ -257,6 +282,24 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 become_a_follower()
             if state['term'] == request.term:
                 state['leader_id'] = request.node_id
+                if len(request.entries) > 0:
+                    #Check if plIndex is not in array, return false
+                    if request.plIndex != 0 and request.plIndex >= len(log):
+                        return reply
+                    
+                    # Parse
+                    entr = [{'term':x,'command':y} for x,y in [m.split('||') for m in request.entries]]
+                    # If last log entry on these server is prevIndex on leader: append entries
+                    if request.plIndex == len(log)-1 or request.plIndex == 0:
+                        log.append(entr)
+                    # If we get conflict entries, do magic
+                    elif log[request.plIndex+1]['term'] != entr[0]['term']:
+                        log = log[:request.plIndex+1]
+                        log.append(entr)
+
+                if request.leaderCommit > state['commitIndex']:
+                    state['commitIndex'] = min(request.leaderCommit,len(log)-1 ) 
+                    update_index()   
                 reply = {'result': True, 'term': state['term']}
             return pb2.ResultWithTerm(**reply)
 
@@ -265,7 +308,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if is_suspended:
             return
 
-        (host, port, _, _) = state['nodes'][state['leader_id']]
+        (host, port, _) = state['nodes'][state['leader_id']]
         reply = {'leader_id': state['leader_id'], 'leader_addr': f"{host}:{[port]}"}
         return pb2.LeaderResp(**reply)
 
@@ -278,6 +321,31 @@ class Handler(pb2_grpc.RaftNodeServicer):
         threading.Timer(request.duration, wake_up_after_suspend).start()
         return pb2.NoArgs()
 
+    def GetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+        reply = {'success': False, 'value': -1}
+        try:
+            val = storage[request.key]
+            reply['value'],reply['success'] = val,True
+        except:
+            pass
+        return pb2.GetResp(**reply)
+    
+    def SetVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+        reply = {'success': True}
+        if state['type'] == 'leader':
+            log.append({'term':state['term'],'command':f'{request.key}={request.val}'})
+        elif state['type'] == 'follower':
+            (_, _, stub) = state['nodes'][state['leader_id']]
+            resp = stub.SetVal(pb2.SetMsg(key=request.key, val=request.val))
+            reply['success'] = resp.success
+        return pb2.SetResp(**reply)
+
 #
 # other
 #
@@ -285,22 +353,22 @@ class Handler(pb2_grpc.RaftNodeServicer):
 def ensure_connected(id):
     if id == state['id']:
         raise "Shouldn't try to connect to itself"
-    (host, port, stub, ind) = state['nodes'][id]
+    (host, port, stub) = state['nodes'][id]
     if not stub:
         channel = grpc.insecure_channel(f"{host}:{port}")
         stub = pb2_grpc.RaftNodeStub(channel)
-        state['nodes'][id] = (host, port, stub, ind)
+        state['nodes'][id] = (host, port, stub)
 
 def reopen_connection(id):
     if id == state['id']:
         raise "Shouldn't try to connect to itself"
-    (host, port, stub, ind) = state['nodes'][id]
+    (host, port, stub) = state['nodes'][id]
     channel = grpc.insecure_channel(f"{host}:{port}")
     stub = pb2_grpc.RaftNodeStub(channel)
-    state['nodes'][id] = (host, port, stub, ind)
+    state['nodes'][id] = (host, port, stub)
 
 def start_server(state):
-    (ip, port, _, _) = state['nodes'][state['id']]
+    (ip, port, _) = state['nodes'][state['id']]
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
     pb2_grpc.add_RaftNodeServicer_to_server(Handler(), server)
     server.add_insecure_port(f"{ip}:{port}")
@@ -308,6 +376,7 @@ def start_server(state):
     return server
 
 def main(id, nodes):
+    global nextIndex, matchIndex
     election_th = threading.Thread(target=election_timeout_thread)
     election_th.start()
 
@@ -323,6 +392,9 @@ def main(id, nodes):
     state['nodes'] = nodes
     state['type'] = 'follower'
     state['term'] = 0
+
+    matchIndex = [0 for _ in nodes]
+    nextIndex = [1 for _ in nodes]
 
     server = start_server(state)
     (host, port, _) = nodes[id]
@@ -349,6 +421,6 @@ if __name__ == '__main__':
     nodes = None
     with open("config.conf", 'r') as f:
         line_parts = map(lambda line: line.split(),f.read().strip().split("\n"))
-        nodes = dict([(int(p[0]), (p[1], int(p[2]), None, {'nextIndex':0,'matchIndex':0})) for p in line_parts])
+        nodes = dict([(int(p[0]), (p[1], int(p[2]), None)) for p in line_parts])
         print(list(nodes))
     main(int(id), nodes)

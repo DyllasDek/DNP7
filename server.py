@@ -99,6 +99,7 @@ def has_enough_votes():
     return state['vote_count'] >= required_votes
 
 def finalize_election():
+    global nextIndex
     stop_election_campaign_timer()
     with state_lock:
         if state['type'] != 'candidate':
@@ -110,6 +111,7 @@ def finalize_election():
             state['leader_id'] = state['id']
             state['vote_count'] = 0
             state['voted_for_id'] = -1
+            #Reset nextIndex to maxsize of log if I become leader
             nextIndex = [len(log) for _ in nodes]
             start_heartbeats()
             print("Votes received")
@@ -128,6 +130,7 @@ def become_a_follower():
     state['type'] = 'follower'
     state['voted_for_id'] = -1
     state['vote_count'] = 0
+    #Reset value if I become follower
     matchIndex = [0 for _ in nodes]
     nextIndex = [1 for _ in nodes]
     # state['leader_id'] = -1
@@ -191,6 +194,7 @@ def election_timeout_thread():
             # if somehow we got here while being a leader,
             # then do nothing
 
+# Special thread to check changes in commitIndex and apply log[lastApplied] if needed 
 def update_index_thread():
     global log
     while not is_terminating:
@@ -217,6 +221,7 @@ def heartbeat_thread(id_to_request):
 
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
+                # Some changes. Adding parser to new entries
                 lInd = nextIndex[id_to_request]-1
                 entr = [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]:]]
                 resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id'], plIndex=lInd, plTerm=log[lInd]['term'],entries=entr,leaderCommit=state['commitIndex']), timeout=0.100)
@@ -229,9 +234,12 @@ def heartbeat_thread(id_to_request):
                         reset_election_campaign_timer()
                         state['term'] = resp.term
                         become_a_follower()
+                    # Additional conditions
+                    # If we got False not because of term inequation - decrease nextIndex and matchIndex, as there are log inconsistency
                     elif not resp.result:
                         nextIndex[id_to_request] = 1 if nextIndex[id_to_request] <= 2 else nextIndex[id_to_request] - 1
                         matchIndex[id_to_request] = 0 if matchIndex[id_to_request] <= 1 else matchIndex[id_to_request] - 1
+                    # If we got true result, update nextIndex and matchIndex
                     elif len(entr) > 0:
                         nextIndex[id_to_request] += len(entr)
                         matchIndex[id_to_request] += len(entr)
@@ -266,6 +274,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 state['term'] = request.term
                 become_a_follower()
             if state['term'] == request.term:
+                # Condition checks that only the node with the most complete logs can become the leader.
                 ind = len(log)-1
                 if state['voted_for_id'] == -1 and request.llIndex >= ind and not (request.llIndex < ind and log[ind]['term'] != request.llTerm):
                     become_a_follower()
@@ -303,8 +312,9 @@ class Handler(pb2_grpc.RaftNodeServicer):
                         print(log[:request.plIndex+1])
                         log = log[:request.plIndex+1]
                         log += entr
+                #upadte commitIndex of server from leaderCommit
                 if request.leaderCommit > state['commitIndex']:
-                    state['commitIndex'] = min(request.leaderCommit,len(log)-1 )   
+                    state['commitIndex'] = min(request.leaderCommit,len(log)-1)   
                 reply = {'result': True, 'term': state['term']}
             return pb2.ResultWithTerm(**reply)
 
@@ -343,8 +353,10 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if is_suspended:
             return
         reply = {'success': True}
+        # If leader, append to log new command
         if state['type'] == 'leader':
             log.append({'term':state['term'],'command':f'{request.key}={request.val}'})
+        # If follower, raise request to leader
         elif state['type'] == 'follower':
             ensure_connected(state['leader_id'])
             (_, _, stub) = state['nodes'][state['leader_id']]
@@ -401,6 +413,7 @@ def main(id, nodes):
     state['type'] = 'follower'
     state['term'] = 0
 
+    # Initial values for matchIndex and nextIndex
     matchIndex = [0 for _ in nodes]
     nextIndex = [1 for _ in nodes]
 

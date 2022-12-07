@@ -14,7 +14,7 @@ import raft_pb2 as pb2
 #
 
 # [HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x*10 for x in [50, 150, 300]]
-[HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x for x in [50, 150, 300]]
+[HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x for x in [50, 2000, 2500]]
 
 #
 # global state
@@ -37,9 +37,10 @@ state = {
     'commitIndex':0,
     'lastApplied':0
 }
-log = [{'term':-1,'command':-1 }]
+log = [{'term':-1,'command':'-1' }]
 storage = {}
-nextIndex = [], matchIndex = []
+nextIndex = []
+matchIndex = []
 # for debugging
 START_TIME = time.time()
 def log_prefix():
@@ -187,10 +188,11 @@ def election_timeout_thread():
             # then do nothing
 
 def update_index():
+    global log
     if state['type'] == 'leader':
-        with max(matchIndex) as MI:
-            if MI > state['commitIndex'] and matchIndex.count(MI) > (len(state['nodes'])//2) + 1 and log[MI]['term'] == state['term']:
-                state['commitIndex'] = MI
+        MI =  max(matchIndex)
+        if MI > state['commitIndex'] and matchIndex.count(MI) > (len(state['nodes'])//2) + 1 and log[MI]['term'] == state['term']:
+            state['commitIndex'] = MI
 
     if state['commitIndex'] > state['lastApplied']:
         state['lastApplied'] += 1
@@ -198,10 +200,10 @@ def update_index():
         storage[func[0]] = func[1]
 
 def heartbeat_thread(id_to_request):
-    global matchIndex,nextIndex
+    global matchIndex,nextIndex,log
     while not is_terminating:
-        try:
-            if heartbeat_events[id_to_request].wait(timeout=0.5):
+        #try:
+            if heartbeat_events[id_to_request].wait(timeout=0.05):
                 heartbeat_events[id_to_request].clear()
 
                 if (state['type'] != 'leader') or is_suspended:
@@ -211,27 +213,31 @@ def heartbeat_thread(id_to_request):
 
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
+                print(f'check pipipypy {nextIndex}')
+                lInd = nextIndex[id_to_request]-1
+                entr = [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]-1:]]
+                print('test1 got')
+                resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id'], plIndex=lInd, plTerm=log[lInd]['term'],entries=entr,leaderCommit=state['commitIndex']), timeout=0.100)
+                print('test2 done')
+                if (state['type'] != 'leader') or is_suspended:
+                    continue
 
-                with nextIndex[id_to_request]-1 as lInd, [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]-1:]] as entr:
-                    resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id'], plIndex=lInd, plTerm=log[lInd]['term'],entries=entr,leaderCommit=state['commitIndex']), timeout=0.100)
-
-                    if (state['type'] != 'leader') or is_suspended:
-                        continue
-
-                    with state_lock:
-                        if state['term'] < resp.term:
-                            reset_election_campaign_timer()
-                            state['term'] = resp.term
-                            become_a_follower()
-                        elif not resp.result:
-                            nextIndex[id_to_request] = 1 if nextIndex[id_to_request] == 2 else nextIndex[id_to_request] - 1
-                            matchIndex[id_to_request] = 0 if matchIndex[id_to_request] == 1 else matchIndex[id_to_request] - 1
-                        elif len(entr) > 0:
-                            nextIndex[id_to_request] += 1 + len(entr)
-                            matchIndex[id_to_request] += len(entr)
+                with state_lock:
+                    if state['term'] < resp.term:
+                        reset_election_campaign_timer()
+                        state['term'] = resp.term
+                        become_a_follower()
+                    elif not resp.result:
+                        print(fail)
+                        nextIndex[id_to_request] = 1 if nextIndex[id_to_request] == 2 else nextIndex[id_to_request] - 1
+                        matchIndex[id_to_request] = 0 if matchIndex[id_to_request] == 1 else matchIndex[id_to_request] - 1
+                    elif len(entr) > 0:
+                        nextIndex[id_to_request] += 1 + len(entr)
+                        matchIndex[id_to_request] += len(entr)
                 threading.Timer(HEARTBEAT_DURATION*0.001, heartbeat_events[id_to_request].set).start()
-        except grpc.RpcError:
-            reopen_connection(id_to_request)
+        #except grpc.RpcError:
+         #   print("Lovushka jokera")
+          #  reopen_connection(id_to_request)
 
 #
 # gRPC server handler
@@ -260,16 +266,16 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 state['term'] = request.term
                 become_a_follower()
             if state['term'] == request.term:
-                with len(log)-1 as ind:
-                    if state['voted_for_id'] == -1 and (request.llIndex > ind or not (request.llIndex == ind and log[ind]['term'] != request.llTerm)):
-                        become_a_follower()
-                        state['voted_for_id'] = request.node_id
-                        reply = {'result': True, 'term': state['term']}
-                        print(f"Voted for node {state['voted_for_id']}")
+                ind = len(log)-1
+                if state['voted_for_id'] == -1 and request.llIndex >= ind and not (request.llIndex < ind and log[ind]['term'] != request.llTerm):
+                    become_a_follower()
+                    state['voted_for_id'] = request.node_id
+                    reply = {'result': True, 'term': state['term']}
+                    print(f"Voted for node {state['voted_for_id']}")
             return pb2.ResultWithTerm(**reply)
 
     def AppendEntries(self, request, context):
-        global is_suspended
+        global is_suspended,log
         if is_suspended:
             return
 
@@ -288,7 +294,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                         return reply
                     
                     # Parse
-                    entr = [{'term':x,'command':y} for x,y in [m.split('||') for m in request.entries]]
+                    entr = [{'term':int(x),'command':y} for x,y in [m.split('||') for m in request.entries]]
                     # If last log entry on these server is prevIndex on leader: append entries
                     if request.plIndex == len(log)-1 or request.plIndex == 0:
                         log.append(entr)

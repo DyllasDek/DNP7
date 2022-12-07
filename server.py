@@ -14,7 +14,7 @@ import raft_pb2 as pb2
 #
 
 # [HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x*10 for x in [50, 150, 300]]
-[HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x for x in [50, 2000, 2500]]
+[HEARTBEAT_DURATION, ELECTION_DURATION_FROM, ELECTION_DURATION_TO] = [x for x in [50, 150, 300]]
 
 #
 # global state
@@ -145,6 +145,7 @@ def request_vote_worker_thread(id_to_request):
     (_, _, stub) = state['nodes'][id_to_request]
     try:
         ind = len(log)-1
+        print(log)
         resp = stub.RequestVote(pb2.VoteArgs(term=state['term'], node_id=state['id'],llIndex=ind,llTerm=log[ind]['term']), timeout=0.1)
 
         with state_lock:
@@ -187,38 +188,37 @@ def election_timeout_thread():
             # if somehow we got here while being a leader,
             # then do nothing
 
-def update_index():
+def update_index_thread():
     global log
-    if state['type'] == 'leader':
-        MI =  max(matchIndex)
-        if MI > state['commitIndex'] and matchIndex.count(MI) > (len(state['nodes'])//2) + 1 and log[MI]['term'] == state['term']:
-            state['commitIndex'] = MI
+    while not is_terminating:
+        if state['type'] == 'leader':
+            MI =  max(matchIndex)
+            if MI > state['commitIndex'] and matchIndex.count(MI) >= (len(state['nodes'])//2) + 1 and log[MI]['term'] == state['term']:
+                state['commitIndex'] = MI
 
-    if state['commitIndex'] > state['lastApplied']:
-        state['lastApplied'] += 1
-        func = split_func(log[state['lastApplied']]['command'])
-        storage[func[0]] = func[1]
+        if state['commitIndex'] > state['lastApplied']:
+            state['lastApplied'] += 1
+            print(state['commitIndex'],state['lastApplied'],log[state['lastApplied']])
+            func = split_func(log[state['lastApplied']]['command'])
+            storage[func[0]] = func[1]
+            print(storage)
 
 def heartbeat_thread(id_to_request):
     global matchIndex,nextIndex,log
     while not is_terminating:
-        #try:
-            if heartbeat_events[id_to_request].wait(timeout=0.05):
+        try:
+            if heartbeat_events[id_to_request].wait(timeout=0.5):
                 heartbeat_events[id_to_request].clear()
 
                 if (state['type'] != 'leader') or is_suspended:
                     continue
-                
-                update_index()
 
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
-                print(f'check pipipypy {nextIndex}')
                 lInd = nextIndex[id_to_request]-1
-                entr = [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]-1:]]
-                print('test1 got')
+                entr = [str(x['term'])+'||'+x['command'] for x in log[nextIndex[id_to_request]:]]
                 resp = stub.AppendEntries(pb2.NodeArgs(term=state['term'], node_id=state['id'], plIndex=lInd, plTerm=log[lInd]['term'],entries=entr,leaderCommit=state['commitIndex']), timeout=0.100)
-                print('test2 done')
+
                 if (state['type'] != 'leader') or is_suspended:
                     continue
 
@@ -228,16 +228,16 @@ def heartbeat_thread(id_to_request):
                         state['term'] = resp.term
                         become_a_follower()
                     elif not resp.result:
-                        print(fail)
-                        nextIndex[id_to_request] = 1 if nextIndex[id_to_request] == 2 else nextIndex[id_to_request] - 1
-                        matchIndex[id_to_request] = 0 if matchIndex[id_to_request] == 1 else matchIndex[id_to_request] - 1
+                        nextIndex[id_to_request] = 1 if nextIndex[id_to_request] <= 2 else nextIndex[id_to_request] - 1
+                        matchIndex[id_to_request] = 0 if matchIndex[id_to_request] <= 1 else matchIndex[id_to_request] - 1
                     elif len(entr) > 0:
-                        nextIndex[id_to_request] += 1 + len(entr)
+                        print(f'done increasing: {len(entr)}')
+                        nextIndex[id_to_request] += len(entr)
                         matchIndex[id_to_request] += len(entr)
+                        print(nextIndex[id_to_request])
                 threading.Timer(HEARTBEAT_DURATION*0.001, heartbeat_events[id_to_request].set).start()
-        #except grpc.RpcError:
-         #   print("Lovushka jokera")
-          #  reopen_connection(id_to_request)
+        except grpc.RpcError:
+          reopen_connection(id_to_request)
 
 #
 # gRPC server handler
@@ -295,6 +295,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                     
                     # Parse
                     entr = [{'term':int(x),'command':y} for x,y in [m.split('||') for m in request.entries]]
+                    print(entr)
                     # If last log entry on these server is prevIndex on leader: append entries
                     if request.plIndex == len(log)-1 or request.plIndex == 0:
                         log.append(entr)
@@ -304,8 +305,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                         log.append(entr)
 
                 if request.leaderCommit > state['commitIndex']:
-                    state['commitIndex'] = min(request.leaderCommit,len(log)-1 ) 
-                    update_index()   
+                    state['commitIndex'] = min(request.leaderCommit,len(log)-1 )   
                 reply = {'result': True, 'term': state['term']}
             return pb2.ResultWithTerm(**reply)
 
@@ -331,7 +331,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
         global is_suspended
         if is_suspended:
             return
-        reply = {'success': False, 'value': -1}
+        reply = {'success': False, 'value': 'None'}
         try:
             val = storage[request.key]
             reply['value'],reply['success'] = val,True
@@ -386,6 +386,8 @@ def main(id, nodes):
     election_th = threading.Thread(target=election_timeout_thread)
     election_th.start()
 
+    index_th = threading.Thread(target=update_index_thread)
+    index_th.start()
     hearbeat_threads = []
     for node_id in nodes:
         if id != node_id:
@@ -418,6 +420,7 @@ def main(id, nodes):
         print("Shutting down")
 
         election_th.join()
+        index_th.join()
         [t.join() for t in hearbeat_threads]
 
 

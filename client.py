@@ -35,7 +35,7 @@ def cmd_getval(key,state):
     if err_msg:
         return (err_msg, state1)
     resp = state1['stub'].GetVal(pb2.GetMsg(key=key))
-    return {resp.value}, state1
+    return resp.value, state1
 
 def cmd_setval(key,val,state):
     (err_msg, state1) = ensure_connected(state)

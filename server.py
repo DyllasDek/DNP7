@@ -34,8 +34,8 @@ state = {
     'vote_count': 0,
     'voted_for_id': -1,
     'leader_id': -1,
-    'commitIndex':0,
-    'lastApplied':0
+    'commitIndex': 0,
+    'lastApplied': 0
 }
 log = [{'term':-1,'command':'-1' }]
 storage = {}
@@ -110,6 +110,7 @@ def finalize_election():
             state['leader_id'] = state['id']
             state['vote_count'] = 0
             state['voted_for_id'] = -1
+            nextIndex = [len(log) for _ in nodes]
             start_heartbeats()
             print("Votes received")
             print(f"I am a leader. Term: {state['term']}")
@@ -121,11 +122,14 @@ def finalize_election():
         reset_election_campaign_timer()
 
 def become_a_follower():
+    global matchIndex,nextIndex
     if state['type'] != 'follower':
         print(f"I am a follower. Term: {state['term']}")
     state['type'] = 'follower'
     state['voted_for_id'] = -1
     state['vote_count'] = 0
+    matchIndex = [0 for _ in nodes]
+    nextIndex = [1 for _ in nodes]
     # state['leader_id'] = -1
 
 #
@@ -145,7 +149,6 @@ def request_vote_worker_thread(id_to_request):
     (_, _, stub) = state['nodes'][id_to_request]
     try:
         ind = len(log)-1
-        print(log)
         resp = stub.RequestVote(pb2.VoteArgs(term=state['term'], node_id=state['id'],llIndex=ind,llTerm=log[ind]['term']), timeout=0.1)
 
         with state_lock:
@@ -198,7 +201,6 @@ def update_index_thread():
 
         if state['commitIndex'] > state['lastApplied']:
             state['lastApplied'] += 1
-            print(state['commitIndex'],state['lastApplied'],log[state['lastApplied']])
             func = split_func(log[state['lastApplied']]['command'])
             storage[func[0]] = func[1]
             print(storage)
@@ -231,10 +233,8 @@ def heartbeat_thread(id_to_request):
                         nextIndex[id_to_request] = 1 if nextIndex[id_to_request] <= 2 else nextIndex[id_to_request] - 1
                         matchIndex[id_to_request] = 0 if matchIndex[id_to_request] <= 1 else matchIndex[id_to_request] - 1
                     elif len(entr) > 0:
-                        print(f'done increasing: {len(entr)}')
                         nextIndex[id_to_request] += len(entr)
                         matchIndex[id_to_request] += len(entr)
-                        print(nextIndex[id_to_request])
                 threading.Timer(HEARTBEAT_DURATION*0.001, heartbeat_events[id_to_request].set).start()
         except grpc.RpcError:
           reopen_connection(id_to_request)
@@ -295,15 +295,14 @@ class Handler(pb2_grpc.RaftNodeServicer):
                     
                     # Parse
                     entr = [{'term':int(x),'command':y} for x,y in [m.split('||') for m in request.entries]]
-                    print(entr)
                     # If last log entry on these server is prevIndex on leader: append entries
                     if request.plIndex == len(log)-1 or request.plIndex == 0:
-                        log.append(entr)
+                        log += entr
                     # If we get conflict entries, do magic
                     elif log[request.plIndex+1]['term'] != entr[0]['term']:
+                        print(log[:request.plIndex+1])
                         log = log[:request.plIndex+1]
-                        log.append(entr)
-
+                        log += entr
                 if request.leaderCommit > state['commitIndex']:
                     state['commitIndex'] = min(request.leaderCommit,len(log)-1 )   
                 reply = {'result': True, 'term': state['term']}
@@ -347,6 +346,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if state['type'] == 'leader':
             log.append({'term':state['term'],'command':f'{request.key}={request.val}'})
         elif state['type'] == 'follower':
+            ensure_connected(state['leader_id'])
             (_, _, stub) = state['nodes'][state['leader_id']]
             resp = stub.SetVal(pb2.SetMsg(key=request.key, val=request.val))
             reply['success'] = resp.success
